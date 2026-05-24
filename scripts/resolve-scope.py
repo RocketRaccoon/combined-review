@@ -170,11 +170,37 @@ def resolve_files(cfg: dict, root: str) -> dict:
     return s
 
 
+def resolve_pr(cfg: dict, root: str) -> dict:
+    pr = cfg["pr_number"]
+    fields = "number,headRefName,baseRefName,headRefOid,baseRefOid,headRepository,baseRepository"
+    r = subprocess.run(
+        ["gh", "pr", "view", str(pr), "--json", fields],
+        cwd=root, capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        raise SystemExit(f"error: gh pr view failed: {r.stderr.strip()}")
+    meta = json.loads(r.stdout)
+    s = base_scope_object()
+    s["kind"] = "pr"
+    s["repo_root"] = root
+    s["pr_number"] = meta["number"]
+    s["head_ref_name"] = meta["headRefName"]
+    s["base_ref_name"] = meta["baseRefName"]
+    s["head_sha"] = meta["headRefOid"]
+    s["base_sha"] = meta["baseRefOid"]
+    s["head_repo_url"] = meta["headRepository"]["url"]
+    s["base_repo_url"] = meta["baseRepository"]["url"]
+    s["needs_clean_worktree"] = True
+    carry_modifiers(s, cfg)
+    return s
+
+
 SCOPE_RESOLVERS = {
     "uncommitted": resolve_uncommitted,
     "base": resolve_base,
     "commit": resolve_commit,
     "files": resolve_files,
+    "pr": resolve_pr,
 }
 
 
@@ -186,8 +212,6 @@ def main() -> None:
         raise SystemExit(
             "error: auto-detect not yet implemented; pass an explicit scope flag"
         )
-    if scope_flag == "pr":
-        raise SystemExit("error: --pr resolution not yet implemented")
     resolver = SCOPE_RESOLVERS[scope_flag]
     scope = resolver(cfg, root)
     json.dump(scope, sys.stdout)
