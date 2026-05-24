@@ -246,7 +246,14 @@ def resolve_pr(cfg: dict, root: str) -> dict:
     s["base_ref_name"] = meta["baseRefName"]
     s["head_sha"] = meta["headRefOid"]
     s["base_sha"] = meta["baseRefOid"]
-    s["head_repo_url"] = meta["headRepository"]["url"] if meta.get("headRepository") else base_repo_url
+    # `gh pr view --json headRepository` returns {id, name, nameWithOwner} —
+    # no `url` field. Construct the HTTPS URL from nameWithOwner so git fetch
+    # works. Falls back to base_repo_url if headRepository is unavailable.
+    head_repo = meta.get("headRepository")
+    if head_repo and head_repo.get("nameWithOwner"):
+        s["head_repo_url"] = f"https://github.com/{head_repo['nameWithOwner']}.git"
+    else:
+        s["head_repo_url"] = base_repo_url
     s["base_repo_url"] = base_repo_url
     s["needs_clean_worktree"] = True
     carry_modifiers(s, cfg)

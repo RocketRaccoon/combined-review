@@ -11,7 +11,7 @@ FAKE_GH_JSON = {
     "baseRefName": "main",
     "headRefOid": "a" * 40,
     "baseRefOid": "b" * 40,
-    "headRepository": {"url": "https://github.com/user/repo.git"},
+    "headRepository": {"id": "x", "name": "repo", "nameWithOwner": "user/repo"},
     "baseRepository": {"url": "https://github.com/upstream/repo.git"},
 }
 
