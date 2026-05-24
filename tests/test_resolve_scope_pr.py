@@ -27,11 +27,19 @@ def make_cfg_pr(num=105):
 
 def write_fake_gh(fake_bin, payload):
     script = fake_bin / "gh"
+    base_repo_url = (payload.get("baseRepository") or {}).get(
+        "url", "https://github.com/upstream/repo.git"
+    )
     script.write_text(
         "#!/bin/sh\n"
-        # Only respond to `gh pr view` calls — fail loudly on anything else.
         'if [ "$1" = "pr" ] && [ "$2" = "view" ]; then\n'
         f"  cat <<'EOF'\n{json.dumps(payload)}\nEOF\n"
+        "  exit 0\n"
+        "fi\n"
+        # `gh repo view --json url` is used by resolve_pr to get base_repo_url
+        # since `gh pr view` does not expose baseRepository.
+        'if [ "$1" = "repo" ] && [ "$2" = "view" ]; then\n'
+        f'  printf \'{{"url":"{base_repo_url}"}}\\n\'\n'
         "  exit 0\n"
         "fi\n"
         'echo "unexpected gh call: $@" >&2; exit 1\n'
