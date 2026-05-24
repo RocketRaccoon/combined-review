@@ -9,8 +9,10 @@ This patch handles only the `uncommitted` kind. Other kinds are added in
 subsequent patches.
 """
 import json
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -185,6 +187,189 @@ def parse_name_status(out: str) -> list[tuple[str, str, str | None]]:
     return entries
 
 
+def make_worktree(repo: str, ref: str) -> str:
+    repo_basename = Path(repo).name
+    tmp = tempfile.mkdtemp(
+        prefix=f"combined-review-{repo_basename}-", dir=os.environ.get("TMPDIR", "/tmp")
+    )
+    Path(tmp).rmdir()
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", tmp, ref],
+        cwd=repo, capture_output=True, text=True, check=True,
+    )
+    return tmp
+
+
+def materialize_diff_in_worktree(
+    repo: str, worktree: str, base_sha: str, head_sha: str
+) -> tuple[str, list[dict], int]:
+    merge_base = subprocess.run(
+        ["git", "merge-base", base_sha, head_sha],
+        cwd=worktree, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    unified = git("diff", f"{base_sha}...{head_sha}", cwd=worktree)
+    name_status = git("diff", "--name-status", f"{base_sha}...{head_sha}", cwd=worktree)
+    changed: list[dict] = []
+    for status, path, old_path in parse_name_status(name_status):
+        if status == "deleted":
+            kind = detect_kind_at_ref(worktree, merge_base, path)
+        else:
+            kind = detect_kind(worktree, path)
+        entry = {
+            "path": path, "old_path": old_path, "status": status, "kind": kind,
+            "lines_changed": None, "post_content": None,
+            "pre_content": None, "note": None,
+        }
+        if kind == "text" and status != "deleted":
+            entry["post_content"] = safe_read_text(worktree, path)
+        if status == "deleted":
+            if kind == "text":
+                entry["pre_content"] = read_at_ref(worktree, merge_base, path)
+            elif kind == "binary":
+                entry["note"] = "binary file deleted — content not inlined"
+            elif kind == "symlink":
+                entry["symlink_target"] = read_at_ref(worktree, merge_base, path)
+                entry["note"] = "symlink deleted"
+            elif kind == "submodule":
+                entry["submodule_pre_sha"] = submodule_sha_at(worktree, merge_base, path)
+                entry["submodule_post_sha"] = None
+                entry["note"] = "submodule removed"
+        elif kind == "binary":
+            entry["note"] = "binary file — content not inlined"
+        elif kind == "symlink":
+            entry["symlink_target"] = symlink_target(worktree, path)
+            entry["note"] = "symlink"
+        elif kind == "submodule":
+            entry["submodule_pre_sha"] = submodule_sha_at(worktree, merge_base, path)
+            entry["submodule_post_sha"] = submodule_sha_at(worktree, head_sha, path)
+            entry["note"] = "submodule pointer change"
+        changed.append(entry)
+    total = sum(
+        1 for line in unified.splitlines()
+        if (line.startswith("+") or line.startswith("-"))
+        and not line.startswith(("+++", "---"))
+    )
+    return unified, changed, total
+
+
+def materialize_base(scope: dict) -> dict:
+    repo = scope["repo_root"]
+    worktree = make_worktree(repo, scope["head_sha"])
+    try:
+        unified, changed, total = materialize_diff_in_worktree(
+            repo, worktree, scope["base_sha"], scope["head_sha"]
+        )
+        return {
+            "scope_kind": "base",
+            "scope_summary": (
+                f"branch {scope['base_ref_name']}...HEAD "
+                f"({scope['base_sha'][:7]}..{scope['head_sha'][:7]})"
+            ),
+            "unified_diff": unified if unified else None,
+            "changed_files": changed, "doc_files": [],
+            "total_lines_changed": total, "changed_file_count": len(changed),
+            "has_reviewable_changes": len(changed) > 0,
+            "worktree_path": worktree, "warnings": [],
+        }
+    except BaseException:
+        subprocess.run(["git", "worktree", "remove", "--force", worktree],
+                       cwd=repo, capture_output=True)
+        raise
+
+
+def commit_parent_count(repo_or_worktree: str, sha: str) -> int:
+    out = subprocess.run(
+        ["git", "rev-list", "--parents", "-n", "1", sha],
+        cwd=repo_or_worktree, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    return max(0, len(out.split()) - 1)
+
+
+def materialize_commit(scope: dict) -> dict:
+    repo = scope["repo_root"]
+    sha = scope["commit_sha"]
+    worktree = make_worktree(repo, sha)
+    try:
+        n_parents = commit_parent_count(worktree, sha)
+        if n_parents == 0:
+            raise SystemExit(
+                f"error: commit {sha[:7]} is a root commit (no parent); "
+                f"v1 does not support reviewing root commits"
+            )
+        if n_parents >= 2:
+            raise SystemExit(
+                f"error: commit {sha[:7]} is a merge commit with {n_parents} parents; "
+                f"v1 does not support reviewing merge commits — review the "
+                f"merged branch's individual commits instead"
+            )
+        unified = subprocess.run(
+            ["git", "show", "--format=", sha],
+            cwd=worktree, capture_output=True, text=True, check=True,
+        ).stdout
+        name_status = subprocess.run(
+            ["git", "show", "--format=", "--name-status", sha],
+            cwd=worktree, capture_output=True, text=True, check=True,
+        ).stdout
+        parent_sha = subprocess.run(
+            ["git", "rev-parse", f"{sha}^"],
+            cwd=worktree, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        changed: list[dict] = []
+        for status, path, old_path in parse_name_status(name_status):
+            if status == "deleted":
+                kind = detect_kind_at_ref(worktree, parent_sha, path)
+            else:
+                kind = detect_kind(worktree, path)
+            entry = {
+                "path": path, "old_path": old_path, "status": status, "kind": kind,
+                "lines_changed": None, "post_content": None,
+                "pre_content": None, "note": None,
+            }
+            if kind == "text" and status != "deleted":
+                entry["post_content"] = safe_read_text(worktree, path)
+            if status == "deleted":
+                if kind == "text":
+                    entry["pre_content"] = read_at_ref(worktree, parent_sha, path)
+                elif kind == "binary":
+                    entry["note"] = "binary file deleted — content not inlined"
+                elif kind == "symlink":
+                    entry["symlink_target"] = read_at_ref(worktree, parent_sha, path)
+                    entry["note"] = "symlink deleted"
+                elif kind == "submodule":
+                    entry["submodule_pre_sha"] = submodule_sha_at(worktree, parent_sha, path)
+                    entry["submodule_post_sha"] = None
+                    entry["note"] = "submodule removed"
+            elif kind == "binary":
+                entry["note"] = "binary file — content not inlined"
+            elif kind == "symlink":
+                entry["symlink_target"] = symlink_target(worktree, path)
+                entry["note"] = "symlink"
+            elif kind == "submodule":
+                entry["submodule_pre_sha"] = submodule_sha_at(worktree, parent_sha, path)
+                entry["submodule_post_sha"] = submodule_sha_at(worktree, sha, path)
+                entry["note"] = "submodule pointer change"
+            changed.append(entry)
+        total = sum(
+            1 for line in unified.splitlines()
+            if (line.startswith("+") or line.startswith("-"))
+            and not line.startswith(("+++", "---"))
+        )
+        return {
+            "scope_kind": "commit",
+            "scope_summary": f"commit {sha[:7]}",
+            "unified_diff": unified if unified else None,
+            "changed_files": changed, "doc_files": [],
+            "total_lines_changed": total, "changed_file_count": len(changed),
+            "has_reviewable_changes": len(changed) > 0,
+            "worktree_path": worktree, "warnings": [],
+        }
+    except BaseException:
+        subprocess.run(["git", "worktree", "remove", "--force", worktree],
+                       cwd=repo, capture_output=True)
+        raise
+
+
 def materialize_uncommitted(scope: dict) -> dict:
     root = scope["repo_root"]
     unified = git("diff", "HEAD", cwd=root)
@@ -291,7 +476,11 @@ def materialize_uncommitted(scope: dict) -> dict:
     }
 
 
-KIND_HANDLERS = {"uncommitted": materialize_uncommitted}
+KIND_HANDLERS = {
+    "uncommitted": materialize_uncommitted,
+    "base": materialize_base,
+    "commit": materialize_commit,
+}
 
 
 def main() -> None:
