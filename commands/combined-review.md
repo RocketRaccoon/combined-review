@@ -1,18 +1,12 @@
 ---
-description: Run Claude pr-review-toolkit + Codex in parallel; merge findings into one report.
+description: "Run Claude pr-review-toolkit + Codex in parallel; merge findings into one report."
 argument-hint: "[--pr N | --uncommitted | --base BRANCH | --commit SHA | <files...>] [--mode code|spec|plan|docs] [--focus TEXT] [--full] [--no-codex] [--save PATH] [--force-large] [--keep-worktree]"
-# Edit is intentionally omitted — this is a read-only review flow. Write is
-# needed for orchestrator-owned temp files (prompt, scope, args) and the
-# optional --save report path. Bash is unavoidable (the entire pipeline is
-# Bash-driven). Removing Edit is defense-in-depth, NOT a hard sandbox: Write
-# and Bash can still modify repo files if the model drifts. The primary
-# protection against unintended edits is the no-edit instruction inside the
-# rendered review prompt + codex's --sandbox read-only enforcement; the
-# allowlist trim just removes the most obvious code-modification path.
 allowed-tools: ["Bash", "Read", "Write", "Glob", "Grep", "Task", "Monitor"]
 ---
 
 # Combined Review
+
+> **Allowlist note** — Edit is intentionally omitted from `allowed-tools` above. This is a read-only review flow. Write is needed for orchestrator-owned temp files (prompt/scope/args) and the optional `--save` report path. Bash is unavoidable (the pipeline is Bash-driven). Removing Edit is defense-in-depth, NOT a hard sandbox — Write+Bash could still modify repo files if the model drifts. Primary protection is the no-edit instruction in the rendered review prompt + `codex exec --sandbox read-only`.
 
 User invoked `/combined-review` with the literal argument string below (do NOT
 substitute it into a shell command — pass it through the args-file path
