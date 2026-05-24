@@ -370,6 +370,82 @@ def materialize_commit(scope: dict) -> dict:
         raise
 
 
+def cat_file_exists(repo_or_worktree: str, sha: str) -> bool:
+    r = subprocess.run(
+        ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+        cwd=repo_or_worktree, capture_output=True,
+    )
+    return r.returncode == 0
+
+
+def materialize_pr(scope: dict) -> dict:
+    repo = scope["repo_root"]
+    head_sha = scope["head_sha"]
+    base_sha = scope["base_sha"]
+    base_url = scope["base_repo_url"]
+    base_ref = scope["base_ref_name"]
+    pr = scope["pr_number"]
+
+    repo_basename = Path(repo).name
+    worktree = tempfile.mkdtemp(
+        prefix=f"combined-review-{repo_basename}-pr-",
+        dir=os.environ.get("TMPDIR", "/tmp"),
+    )
+    Path(worktree).rmdir()
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", worktree],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+
+    try:
+        r = subprocess.run(
+            ["gh", "pr", "checkout", "--detach", str(pr)],
+            cwd=worktree, capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            raise SystemExit(f"error: gh pr checkout failed: {r.stderr.strip()}")
+
+        subprocess.run(
+            ["git", "fetch", base_url, base_ref],
+            cwd=worktree, capture_output=True, text=True,
+        )
+
+        current_head = git("rev-parse", "HEAD", cwd=worktree).strip()
+        if current_head != head_sha:
+            if not cat_file_exists(worktree, head_sha):
+                raise SystemExit(
+                    f"error: PR head force-pushed mid-review — recorded {head_sha[:7]} "
+                    f"no longer reachable. Rerun /combined-review --pr {pr} to fetch the current snapshot."
+                )
+            subprocess.run(
+                ["git", "reset", "--hard", head_sha],
+                cwd=worktree, check=True, capture_output=True, text=True,
+            )
+
+        if not cat_file_exists(worktree, base_sha):
+            raise SystemExit(
+                f"error: PR base SHA {base_sha[:7]} not reachable in worktree. "
+                f"Rerun /combined-review --pr {pr} to fetch the current snapshot."
+            )
+
+        unified, changed, total = materialize_diff_in_worktree(
+            repo, worktree, base_sha, head_sha
+        )
+        return {
+            "scope_kind": "pr",
+            "scope_summary": f"PR #{pr} ({base_sha[:7]}..{head_sha[:7]})",
+            "unified_diff": unified if unified else None,
+            "changed_files": changed, "doc_files": [],
+            "total_lines_changed": total, "changed_file_count": len(changed),
+            "has_reviewable_changes": len(changed) > 0,
+            "worktree_path": worktree, "warnings": [],
+        }
+    except BaseException:
+        subprocess.run(["git", "worktree", "remove", "--force", worktree],
+                       cwd=repo, capture_output=True)
+        raise
+
+
 def materialize_uncommitted(scope: dict) -> dict:
     root = scope["repo_root"]
     unified = git("diff", "HEAD", cwd=root)
@@ -480,6 +556,7 @@ KIND_HANDLERS = {
     "uncommitted": materialize_uncommitted,
     "base": materialize_base,
     "commit": materialize_commit,
+    "pr": materialize_pr,
 }
 
 
