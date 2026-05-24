@@ -170,6 +170,53 @@ def resolve_files(cfg: dict, root: str) -> dict:
     return s
 
 
+def is_dirty(cwd: str) -> bool:
+    """True if there are staged, unstaged, or untracked changes."""
+    out = git("status", "--porcelain", cwd=cwd)
+    return bool(out)
+
+
+def current_branch(cwd: str) -> str:
+    return git("rev-parse", "--abbrev-ref", "HEAD", cwd=cwd)
+
+
+def _ref_resolves(cwd: str, ref: str) -> bool:
+    return subprocess.run(
+        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        cwd=cwd, capture_output=True,
+    ).returncode == 0
+
+
+def default_branch(cwd: str) -> str | None:
+    """Return a ref name (locally resolvable) for the repository default branch."""
+    r = subprocess.run(
+        ["gh", "repo", "view", "--json", "defaultBranchRef"],
+        cwd=cwd, capture_output=True, text=True,
+    )
+    if r.returncode == 0:
+        try:
+            name = json.loads(r.stdout)["defaultBranchRef"]["name"]
+            for ref in (name, f"origin/{name}"):
+                if _ref_resolves(cwd, ref):
+                    return ref
+        except (KeyError, json.JSONDecodeError):
+            pass
+    for candidate in ("main", "master", "origin/main", "origin/master"):
+        if _ref_resolves(cwd, candidate):
+            return candidate
+    return None
+
+
+def pr_for_current_branch(cwd: str) -> int | None:
+    r = subprocess.run(
+        ["gh", "pr", "view", "--json", "number"],
+        cwd=cwd, capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return None
+    return json.loads(r.stdout)["number"]
+
+
 def resolve_pr(cfg: dict, root: str) -> dict:
     pr = cfg["pr_number"]
     fields = "number,headRefName,baseRefName,headRefOid,baseRefOid,headRepository,baseRepository"
@@ -209,9 +256,27 @@ def main() -> None:
     root = repo_root()
     scope_flag = cfg["scope_flag"]
     if scope_flag is None:
-        raise SystemExit(
-            "error: auto-detect not yet implemented; pass an explicit scope flag"
-        )
+        dirty = is_dirty(root)
+        pr_num = pr_for_current_branch(root)
+        if dirty and pr_num is not None:
+            raise SystemExit(
+                "error: ambiguous scope — tree has uncommitted changes and "
+                f"current branch has PR #{pr_num}. Pass --uncommitted or --pr {pr_num}."
+            )
+        if dirty:
+            scope_flag = "uncommitted"
+        elif pr_num is not None:
+            scope_flag = "pr"
+            cfg["pr_number"] = pr_num
+        else:
+            branch = current_branch(root)
+            default = default_branch(root)
+            if default is None or branch == default:
+                raise SystemExit(
+                    "error: nothing to review (clean tree, on default branch, no PR)"
+                )
+            scope_flag = "base"
+            cfg["base_branch"] = default
     resolver = SCOPE_RESOLVERS[scope_flag]
     scope = resolver(cfg, root)
     json.dump(scope, sys.stdout)
