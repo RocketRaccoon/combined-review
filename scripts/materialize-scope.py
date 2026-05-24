@@ -552,11 +552,66 @@ def materialize_uncommitted(scope: dict) -> dict:
     }
 
 
+def materialize_files(scope: dict) -> dict:
+    root = scope["repo_root"]
+    doc_files: list[dict] = []
+    for path in scope["files"]:
+        kind = detect_kind(root, path)
+        entry: dict = {
+            "path": path, "status": "current", "kind": kind,
+            "content": None, "note": None,
+        }
+        if kind == "text":
+            entry["content"] = safe_read_text(root, path)
+        elif kind == "symlink":
+            entry["symlink_target"] = symlink_target(root, path)
+            entry["note"] = "symlink"
+        elif kind == "submodule":
+            entry["submodule_sha"] = submodule_sha_at(root, "WORKTREE", path)
+            entry["note"] = "submodule pointer (no diff — single snapshot)"
+        elif kind == "binary":
+            entry["note"] = "binary file — content not inlined"
+        else:
+            entry["note"] = f"non-text ({kind}) — content not inlined"
+        doc_files.append(entry)
+    return {
+        "scope_kind": "files",
+        "scope_summary": f"{len(doc_files)} file(s) — current working-tree content",
+        "unified_diff": None,
+        "changed_files": [],
+        "doc_files": doc_files,
+        "total_lines_changed": 0,
+        "changed_file_count": 0,
+        "has_reviewable_changes": len(doc_files) > 0,
+        "worktree_path": None, "warnings": [],
+    }
+
+
+def maybe_populate_doc_files(out: dict, scope: dict) -> None:
+    if scope["mode"] == "code":
+        return
+    if scope["kind"] == "files":
+        return
+    docs = []
+    for cf in out["changed_files"]:
+        if cf["kind"] != "text":
+            continue
+        if cf["status"] == "deleted":
+            content = cf.get("pre_content")
+        else:
+            content = cf.get("post_content")
+        if content is None:
+            continue
+        docs.append({"path": cf["path"], "status": cf["status"], "content": content})
+    out["doc_files"] = docs
+
+
 KIND_HANDLERS = {
     "uncommitted": materialize_uncommitted,
     "base": materialize_base,
     "commit": materialize_commit,
     "pr": materialize_pr,
+    "files": materialize_files,
 }
 
 
@@ -566,6 +621,7 @@ def main() -> None:
     if handler is None:
         raise SystemExit(f"error: materialize for kind={scope['kind']!r} not implemented")
     out = handler(scope)
+    maybe_populate_doc_files(out, scope)
     json.dump(out, sys.stdout)
     sys.stdout.write("\n")
 
