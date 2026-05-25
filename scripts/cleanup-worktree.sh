@@ -14,8 +14,11 @@ if [[ $# -ne 2 ]]; then
 fi
 REPO="$1"
 WT="$2"
-REPO_ABS="$(cd "$REPO" && pwd)"
-WT_ABS="$(cd "$(dirname "$WT")" && pwd)/$(basename "$WT")"
+# Use `pwd -P` (physical) throughout so we compare canonical paths. macOS
+# aliases /var -> /private/var; without -P, the worktree's parent (canonical)
+# and $TMPDIR (logical) mismatch and the gate refuses a legitimate cleanup.
+REPO_ABS="$(cd "$REPO" && pwd -P)"
+WT_ABS="$(cd "$(dirname "$WT")" && pwd -P)/$(basename "$WT")"
 
 # 0. Marker check
 if [[ -f "$WT_ABS/.combined-review-keep" ]]; then
@@ -35,11 +38,12 @@ if [[ ! "$base" =~ ^combined-review- ]]; then
   echo "refused: $WT_ABS basename does not match combined-review-* pattern" >&2
   exit 3
 fi
-parent="$(cd "$(dirname "$WT_ABS")" && pwd)"
+parent="$(cd "$(dirname "$WT_ABS")" && pwd -P)"
 TMP="${TMPDIR:-/tmp}"
-TMP_ABS="$(cd "$TMP" && pwd)"
-if [[ "$parent" != "$TMP_ABS" && "$parent" != "/tmp" ]]; then
-  echo "refused: $WT_ABS parent ($parent) is not \$TMPDIR ($TMP_ABS) or /tmp" >&2
+TMP_ABS="$(cd "$TMP" && pwd -P)"
+TMP_PHYS="$(cd /tmp && pwd -P)"
+if [[ "$parent" != "$TMP_ABS" && "$parent" != "$TMP_PHYS" ]]; then
+  echo "refused: $WT_ABS parent ($parent) is not \$TMPDIR ($TMP_ABS) or /tmp ($TMP_PHYS)" >&2
   exit 3
 fi
 

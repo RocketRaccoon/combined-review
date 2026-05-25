@@ -219,7 +219,11 @@ def pr_for_current_branch(cwd: str) -> int | None:
 
 def resolve_pr(cfg: dict, root: str) -> dict:
     pr = cfg["pr_number"]
-    fields = "number,headRefName,baseRefName,headRefOid,baseRefOid,headRepository,baseRepository"
+    # gh pr view does NOT expose baseRepository (only headRepository). The PR's
+    # base repo is whatever repo `gh pr view` is being run against — i.e., the
+    # current repo as reported by `gh repo view`. So we fetch them separately
+    # and stitch together.
+    fields = "number,headRefName,baseRefName,headRefOid,baseRefOid,headRepository"
     r = subprocess.run(
         ["gh", "pr", "view", str(pr), "--json", fields],
         cwd=root, capture_output=True, text=True,
@@ -227,6 +231,13 @@ def resolve_pr(cfg: dict, root: str) -> dict:
     if r.returncode != 0:
         raise SystemExit(f"error: gh pr view failed: {r.stderr.strip()}")
     meta = json.loads(r.stdout)
+    r2 = subprocess.run(
+        ["gh", "repo", "view", "--json", "url"],
+        cwd=root, capture_output=True, text=True,
+    )
+    if r2.returncode != 0:
+        raise SystemExit(f"error: gh repo view failed (needed for base_repo_url): {r2.stderr.strip()}")
+    base_repo_url = json.loads(r2.stdout)["url"]
     s = base_scope_object()
     s["kind"] = "pr"
     s["repo_root"] = root
@@ -235,8 +246,15 @@ def resolve_pr(cfg: dict, root: str) -> dict:
     s["base_ref_name"] = meta["baseRefName"]
     s["head_sha"] = meta["headRefOid"]
     s["base_sha"] = meta["baseRefOid"]
-    s["head_repo_url"] = meta["headRepository"]["url"]
-    s["base_repo_url"] = meta["baseRepository"]["url"]
+    # `gh pr view --json headRepository` returns {id, name, nameWithOwner} —
+    # no `url` field. Construct the HTTPS URL from nameWithOwner so git fetch
+    # works. Falls back to base_repo_url if headRepository is unavailable.
+    head_repo = meta.get("headRepository")
+    if head_repo and head_repo.get("nameWithOwner"):
+        s["head_repo_url"] = f"https://github.com/{head_repo['nameWithOwner']}.git"
+    else:
+        s["head_repo_url"] = base_repo_url
+    s["base_repo_url"] = base_repo_url
     s["needs_clean_worktree"] = True
     carry_modifiers(s, cfg)
     return s
