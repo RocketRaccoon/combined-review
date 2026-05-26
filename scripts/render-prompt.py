@@ -121,20 +121,26 @@ def main() -> None:
     if focus:
         out.append(f"\n## Additional focus\n\n{focus}\n")
     out.append(f"\n## Review subject\n\n**Scope:** {mat['scope_summary']}\n")
-    # Slimming rule: when doc_files is populated (non-code modes on diff scopes,
-    # or files-scope), the per-file content already covers everything the diff
-    # would show — the diff is mostly `+`-prefixed duplication of the same text.
-    # Skipping it cuts the rendered prompt by ~3× on doc-heavy reviews (saw
-    # 720KB → ~250KB on the PR #152 smoke), which keeps the prompt under the
-    # Claude Agent's effective input window. Code-mode + diff scopes still get
-    # the unified diff (no doc_files there).
-    if mat.get("unified_diff") and not mat.get("doc_files"):
+    # Slimming rule: only skip the diff when doc_files is populated AND every
+    # changed file is `status == "added"`. For added files the diff is a
+    # `+`-prefix copy of post_content — pure duplication, and dropping it cut
+    # the PR #152 smoke prompt from ~720KB to ~250KB (under the Claude Agent's
+    # effective input window). For modified/deleted/renamed/typechange files
+    # the diff carries `-`-line context that post_content does NOT — without
+    # it, a docs/spec PR that deletes a requirement would render only the
+    # final text and reviewers could not see what was removed. Keep the diff
+    # in that case even at the cost of prompt size.
+    changed = mat.get("changed_files") or []
+    all_added = bool(changed) and all(cf.get("status") == "added" for cf in changed)
+    has_diff = bool(mat.get("unified_diff"))
+    has_docs = bool(mat.get("doc_files"))
+    if has_diff and not (has_docs and all_added):
         out.append("\n### Unified diff\n\n" + fenced(mat["unified_diff"], "diff") + "\n")
-    elif mat.get("unified_diff") and mat.get("doc_files"):
+    elif has_diff and has_docs and all_added:
         out.append(
-            "\n_(unified diff omitted — full file contents below cover the same changes "
-            "without the `+`/`-` duplication. See the worktree at the scope's `worktree_path` "
-            "if you need to inspect the diff directly.)_\n"
+            "\n_(unified diff omitted — every changed file is newly added, so the "
+            "full file contents below cover the same lines without the `+` prefix "
+            "duplication. See the scope's `worktree_path` to inspect the diff directly.)_\n"
         )
     if mat["changed_files"]:
         out.append("\n### Changed files (full content)\n")
