@@ -114,3 +114,119 @@ def test_render_handles_nested_fences_in_doc(tmp_path):
     # Schema appendix must NOT have been swallowed by an unbalanced fence
     assert "---FINDING---" in out
     assert "End of prompt" not in out or "FINDING" in out  # schema present
+
+
+def test_render_skips_unified_diff_when_all_files_added():
+    """Regression for prompt-size blowup observed on PR #152 smoke run.
+
+    When every changed file is newly added AND doc_files is populated (non-code
+    modes on diff scopes mirror text files into doc_files), the diff is just
+    `+`-prefixed duplication of the same content. Keeping both made the
+    rendered prompt ~720KB and Claude's Agent tool timed out. For all-added
+    scopes the diff carries no unique info, so skip it.
+    """
+    big_text = "line\n" * 1000  # 5000 chars
+    mat = make_materialized(
+        scope_kind="pr",
+        unified_diff="+" + "\n+".join(["line"] * 1000),  # mirrors big_text
+        changed_files=[{
+            "path": "spec.md", "status": "added", "kind": "text",
+            "post_content": big_text, "pre_content": None, "old_path": None,
+            "lines_changed": "(modified)", "note": None,
+        }],
+        doc_files=[{"path": "spec.md", "status": "added", "content": big_text}],
+    )
+    r = run_script("render-prompt.py", "--mode", "spec",
+                   input=json.dumps(mat))
+    assert r.returncode == 0, r.stderr
+    out = r.stdout
+    # The diff section header must NOT appear
+    assert "### Unified diff" not in out
+    # The diff content (lines prefixed with `+`) must NOT appear
+    assert "+line" not in out
+    # The doc content MUST still appear (twice, once in changed_files render
+    # once in doc_files render — but that's not blowup, that's the design)
+    assert big_text.strip() in out
+    # And the omission note must be present so the reviewer knows
+    assert "unified diff omitted" in out
+
+
+def test_render_keeps_unified_diff_when_any_file_modified():
+    """The slim rule must NOT apply when a changed file is `modified` — its
+    `-`-line context (deleted/rewritten content) lives ONLY in the diff. If
+    we dropped the diff, a docs/spec PR that removed a requirement would
+    render only the final text, hiding the deletion from the reviewer."""
+    mat = make_materialized(
+        scope_kind="pr",
+        unified_diff=(
+            "diff --git a/spec.md b/spec.md\n"
+            "@@ -1,3 +1,3 @@\n"
+            " keep this\n"
+            "-DELETED REQUIREMENT\n"
+            "+NEW REQUIREMENT\n"
+        ),
+        changed_files=[{
+            "path": "spec.md", "status": "modified", "kind": "text",
+            "post_content": "keep this\nNEW REQUIREMENT\n",
+            "pre_content": None, "old_path": None,
+            "lines_changed": "(modified)", "note": None,
+        }],
+        doc_files=[{"path": "spec.md", "status": "modified",
+                    "content": "keep this\nNEW REQUIREMENT\n"}],
+    )
+    r = run_script("render-prompt.py", "--mode", "spec",
+                   input=json.dumps(mat))
+    assert r.returncode == 0, r.stderr
+    out = r.stdout
+    # Diff section MUST be present
+    assert "### Unified diff" in out
+    # The `-` line MUST be visible — that's the whole point
+    assert "-DELETED REQUIREMENT" in out
+    assert "+NEW REQUIREMENT" in out
+    # Omission note must NOT appear
+    assert "unified diff omitted" not in out
+
+
+def test_render_keeps_unified_diff_when_any_file_deleted():
+    """Same principle as modified: a `deleted` file's `-`-prefixed content
+    lives in the diff. We do render `pre_content` for deletions separately
+    in render_changed_files, but the diff is still the authoritative source
+    and we should not silently drop it on mixed-status scopes."""
+    mat = make_materialized(
+        scope_kind="pr",
+        unified_diff=(
+            "diff --git a/old.md b/old.md\n"
+            "deleted file mode 100644\n"
+            "@@ -1 +0,0 @@\n"
+            "-removed file content\n"
+        ),
+        changed_files=[{
+            "path": "old.md", "status": "deleted", "kind": "text",
+            "post_content": None, "pre_content": "removed file content\n",
+            "old_path": None, "lines_changed": "(modified)", "note": None,
+        }],
+        doc_files=[{"path": "old.md", "status": "deleted",
+                    "content": "removed file content\n"}],
+    )
+    r = run_script("render-prompt.py", "--mode", "spec",
+                   input=json.dumps(mat))
+    assert r.returncode == 0, r.stderr
+    assert "### Unified diff" in r.stdout
+    assert "-removed file content" in r.stdout
+    assert "unified diff omitted" not in r.stdout
+
+
+def test_render_keeps_unified_diff_when_doc_files_empty():
+    """Code-mode + diff scopes have empty doc_files. The unified diff is the
+    review subject; keep it."""
+    mat = make_materialized(
+        scope_kind="base",
+        unified_diff="diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n",
+        doc_files=[],
+    )
+    r = run_script("render-prompt.py", "--mode", "code",
+                   input=json.dumps(mat))
+    assert r.returncode == 0, r.stderr
+    assert "### Unified diff" in r.stdout
+    assert "+new" in r.stdout
+    assert "unified diff omitted" not in r.stdout
