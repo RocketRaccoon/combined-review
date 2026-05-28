@@ -18,10 +18,14 @@ def test_no_subcommand_errors():
             or "expected" in r.stderr.lower())
 
 
-def test_phase_a_requires_args_flag():
-    r = run_script("orchestrate.py", "phase-a")
+def test_phase_a_requires_stdin():
+    """phase-a reads the arg string from stdin (NOT --args flag and NOT
+    positional). Tried both during PR #178 iterations; argparse rejects
+    flag-shaped values in both forms. stdin is immune to that quirk.
+    SKILL.md: `echo "$ARGUMENTS" | orchestrate.py phase-a`."""
+    r = run_script("orchestrate.py", "phase-a", input="")
     assert r.returncode != 0
-    assert "--args" in r.stderr
+    assert "stdin" in r.stderr.lower()
 
 
 def test_run_codex_requires_state_flag():
