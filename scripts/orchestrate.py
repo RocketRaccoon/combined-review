@@ -344,10 +344,13 @@ def main() -> None:
     if ns.phase == "phase-c-pre":
         cmd_phase_c_pre(ns.state)
         return
-    raise SystemExit(
-        f"orchestrate.py: subcommand {ns.phase!r} is not yet implemented "
-        "(see plan Task 6)"
-    )
+    if ns.phase == "phase-c-post":
+        cmd_phase_c_post(ns.state, ns.clusters_file)
+        return
+    if ns.phase == "cleanup":
+        cmd_cleanup(ns.state)
+        return
+    raise SystemExit(f"orchestrate.py: unknown subcommand {ns.phase!r}")
 
 
 def _load_state(state_path: str) -> dict:
@@ -356,6 +359,210 @@ def _load_state(state_path: str) -> dict:
         sys.exit(1)
     with open(state_path) as f:
         return json.load(f)
+
+
+# ---- T6: phase-c-post + cleanup ----
+
+# Allowlist of state.paths keys that are DIRECTORIES (not files). Anything not
+# in this set is treated as a file (Path.unlink). Forces a deliberate choice
+# for any future path added to state.paths. PR #178 review fix.
+_DIR_PATH_KEYS = {"claude_transcripts_dir"}
+
+
+def _validate_clusters_subproc(cluster_text: str) -> str | None:
+    """Run scripts/validate-clusters.py. Returns None on valid, error string on
+    invalid (the validator's stderr message, suitable for both stderr output
+    on first-fail AND for --synthesis-failed-file on second-fail)."""
+    r = subprocess.run(
+        ["python3", str(SCRIPTS_DIR / "validate-clusters.py")],
+        input=cluster_text, capture_output=True, text=True,
+    )
+    if r.returncode == 0:
+        return None
+    return r.stderr.strip() or f"validate-clusters.py exited {r.returncode}"
+
+
+def _claude_raw_path(state: dict) -> str:
+    """report.py wants a single --claude-raw file containing all transcripts.
+    Use $TRANSCRIPTS_DIR/all.txt if Claude wrote it; otherwise concatenate the
+    per-agent transcripts on the fly. The temp concat is returned as a path
+    that cleanup_all will remove (it's not in state.paths)."""
+    transcripts_dir = Path(state["paths"]["claude_transcripts_dir"])
+    all_txt = transcripts_dir / "all.txt"
+    if all_txt.exists() and all_txt.read_text().strip():
+        return str(all_txt)
+    # Concat ourselves into a temp file (lives until cleanup)
+    fd, tmp = tempfile.mkstemp(prefix="combined-review-claude-raw-", suffix=".txt")
+    with os.fdopen(fd, "w") as f:
+        for transcript in sorted(transcripts_dir.glob("*.txt")):
+            if transcript.name == "all.txt":
+                continue
+            f.write(f"\n# === {transcript.stem} ===\n\n")
+            f.write(transcript.read_text())
+            f.write("\n")
+    return tmp
+
+
+def _render_success(state: dict, cluster_text: str) -> str:
+    """Run report.py with cluster JSON on stdin; return the rendered markdown."""
+    claude_raw = _claude_raw_path(state)
+    try:
+        cmd = [
+            "python3", str(SCRIPTS_DIR / "report.py"),
+            "--codex-raw", state["paths"]["codex_stdout"],
+            "--codex-stderr", state["paths"]["codex_stderr"],
+            "--claude-raw", claude_raw,
+        ]
+        r = subprocess.run(cmd, input=cluster_text,
+                            capture_output=True, text=True, check=True)
+        return r.stdout
+    finally:
+        # Only remove the temp concat — never the audit file in transcripts_dir
+        if claude_raw != str(Path(state["paths"]["claude_transcripts_dir"]) / "all.txt"):
+            try:
+                os.unlink(claude_raw)
+            except OSError:
+                pass
+
+
+def _render_synthesis_failed(state: dict, error_msg: str) -> str:
+    """Run report.py in --synthesis-failed-file mode. Passes the message via
+    a temp file to avoid shell-injection of validator output (which can
+    contain backticks/$()/quotes)."""
+    fd, err_file = tempfile.mkstemp(
+        prefix="combined-review-validate-stderr-", suffix=".txt"
+    )
+    with os.fdopen(fd, "w") as f:
+        f.write(error_msg)
+    claude_raw = _claude_raw_path(state)
+    try:
+        cmd = [
+            "python3", str(SCRIPTS_DIR / "report.py"),
+            "--codex-raw", state["paths"]["codex_stdout"],
+            "--codex-stderr", state["paths"]["codex_stderr"],
+            "--claude-raw", claude_raw,
+            "--synthesis-failed-file", err_file,
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return r.stdout
+    finally:
+        try:
+            os.unlink(err_file)
+        except OSError:
+            pass
+        if claude_raw != str(Path(state["paths"]["claude_transcripts_dir"]) / "all.txt"):
+            try:
+                os.unlink(claude_raw)
+            except OSError:
+                pass
+
+
+def _cleanup_all(state: dict, state_path: str) -> None:
+    """Tear down worktree (unless --keep-worktree) + every entry in state.paths
+    (files via unlink, dirs via rmtree) + state file itself.
+
+    state.config.save_path is structurally protected — it lives outside
+    state.paths so this loop never sees it. PR #178 review fix."""
+    # 1. Worktree (reads from state.scope; must run BEFORE state file removed)
+    wt = (state.get("scope") or {}).get("worktree_path")
+    repo_root = (state.get("scope") or {}).get("repo_root")
+    if wt:
+        if state["config"].get("keep_worktree"):
+            try:
+                Path(wt, ".combined-review-keep").touch()
+            except OSError:
+                pass
+        elif repo_root:
+            subprocess.run(
+                [str(SCRIPTS_DIR / "cleanup-worktree.sh"), repo_root, wt],
+                capture_output=True,
+            )
+    # 2. Every path in state.paths — file vs dir distinction is explicit.
+    for key, path in (state.get("paths") or {}).items():
+        if not path:
+            continue
+        try:
+            if key in _DIR_PATH_KEYS:
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                Path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
+    # 3. State file itself
+    try:
+        Path(state_path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def cmd_phase_c_post(state_path: str, clusters_path: str) -> None:
+    """T6 — validate clusters; render report; cleanup (try/finally).
+
+    Three exit branches:
+      0: cluster JSON valid → render → cleanup → exit
+      2: cluster JSON invalid AND first attempt → bump validation_attempts in
+         state; emit validator error on stderr; exit WITHOUT cleanup so Claude
+         can read the error, rewrite clusters, and re-invoke this command.
+      1: cluster JSON invalid AND second attempt → render error report
+         (preserves raw-findings audit appendix); cleanup; exit.
+    """
+    state = _load_state(state_path)
+    try:
+        cluster_text = Path(clusters_path).read_text()
+    except FileNotFoundError:
+        sys.stderr.write(f"error: clusters file not found: {clusters_path}\n")
+        _cleanup_all(state, state_path)
+        sys.exit(1)
+    err = _validate_clusters_subproc(cluster_text)
+    if err is not None:
+        attempts = state.get("validation_attempts", 0)
+        if attempts < 1:
+            # First failure — give Claude one shot to repair. CRITICAL: no cleanup.
+            state["validation_attempts"] = attempts + 1
+            _write_state_atomic(state, state_path)
+            sys.stderr.write(
+                f"validation failed (attempt {attempts + 1}): {err}\n"
+                "Rewrite the clusters JSON addressing this error, "
+                "then re-invoke `orchestrate.py phase-c-post --state ... --clusters-file ...`.\n"
+            )
+            sys.exit(2)
+        # Second failure — render the synthesis-failed report and clean up.
+        try:
+            report_md = _render_synthesis_failed(state, err)
+            sys.stdout.write(report_md)
+            _maybe_save(state, report_md)
+        finally:
+            _cleanup_all(state, state_path)
+        sys.exit(1)
+    # Valid — render, save, cleanup.
+    try:
+        report_md = _render_success(state, cluster_text)
+        sys.stdout.write(report_md)
+        _maybe_save(state, report_md)
+    finally:
+        _cleanup_all(state, state_path)
+
+
+def _maybe_save(state: dict, report_md: str) -> None:
+    save = (state.get("config") or {}).get("save_path")
+    if save:
+        try:
+            Path(save).write_text(report_md)
+        except OSError as e:
+            sys.stderr.write(f"warning: could not save report to {save}: {e}\n")
+
+
+def cmd_cleanup(state_path: str) -> None:
+    """T6 — standalone cleanup for early-abort paths.
+
+    Used when Claude got phase-a output, then aborted (e.g. user declined
+    the large-diff gate). Same teardown as phase-c-post's finally block."""
+    try:
+        state = _load_state(state_path)
+    except SystemExit:
+        raise  # _load_state already wrote a clean error
+    _cleanup_all(state, state_path)
+    sys.exit(0)
 
 
 def _read_codex_status_safe(status_path: str, *, no_codex: bool) -> dict:
