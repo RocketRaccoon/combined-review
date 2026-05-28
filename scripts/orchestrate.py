@@ -341,9 +341,12 @@ def main() -> None:
     if ns.phase == "run-codex":
         cmd_run_codex(ns.state)
         return
+    if ns.phase == "phase-c-pre":
+        cmd_phase_c_pre(ns.state)
+        return
     raise SystemExit(
         f"orchestrate.py: subcommand {ns.phase!r} is not yet implemented "
-        "(see plan Tasks 5-6)"
+        "(see plan Task 6)"
     )
 
 
@@ -353,6 +356,140 @@ def _load_state(state_path: str) -> dict:
         sys.exit(1)
     with open(state_path) as f:
         return json.load(f)
+
+
+def _read_codex_status_safe(status_path: str, *, no_codex: bool) -> dict:
+    """Robust read of run-codex.py's status JSON. Handles all four cases
+    SKILL.md/spec §5 require:
+      - no_codex=True: codex was never invoked → status='skipped'
+      - file missing: same outcome as empty (couldn't write)
+      - file empty: run-codex.py SIGKILLed before writing (PR #152 HIGH —
+        json.loads('') would crash; treat as failure with explanatory error)
+      - file present and valid JSON: trust it (run-codex.py wrote a real status)
+    """
+    if no_codex:
+        return {"status": "skipped"}
+    try:
+        raw = Path(status_path).read_text()
+    except FileNotFoundError:
+        return {
+            "status": "failed",
+            "error": "codex did not write a status file (file missing — "
+                     "likely killed before reaching the status-write step)",
+            "exit_code": -1, "duration_ms": 0,
+        }
+    if not raw.strip():
+        return {
+            "status": "failed",
+            "error": "codex did not write a status file (file empty — "
+                     "likely SIGKILLed mid-run before reaching the status-write step)",
+            "exit_code": -1, "duration_ms": 0,
+        }
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        return {
+            "status": "failed",
+            "error": f"codex status file did not parse as JSON: {e}",
+            "exit_code": -1, "duration_ms": 0,
+        }
+
+
+def _normalize_findings_subproc(text: str, source: str) -> dict:
+    """Call scripts/normalize-findings.py via subprocess; return parsed JSON
+    with findings/parse_warnings/unparsed_chunks."""
+    r = subprocess.run(
+        ["python3", str(SCRIPTS_DIR / "normalize-findings.py"),
+         "--source", source],
+        input=text, capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        # Don't crash phase-c-pre; emit empty findings + a warning
+        return {
+            "findings": [],
+            "parse_warnings": [f"normalize-findings.py exited {r.returncode}: {r.stderr.strip()[:200]}"],
+            "unparsed_chunks": [{"source": source, "text": text[:500]}] if text else [],
+        }
+    return json.loads(r.stdout)
+
+
+def cmd_phase_c_pre(state_path: str) -> None:
+    """T5 — normalize codex + claude reviewer outputs; allocate clusters file.
+
+    Inputs (from state):
+      paths.codex_stdout, paths.codex_status, paths.claude_transcripts_dir,
+      config.no_codex
+    Outputs:
+      - state.paths.clusters_file set to a fresh empty file path
+      - stdout JSON: normalized_findings, reviewer_summary, clusters_file
+    """
+    state = _load_state(state_path)
+    paths = state["paths"]
+    no_codex = state["config"].get("no_codex", False)
+    # Codex side
+    codex_status = _read_codex_status_safe(paths["codex_status"], no_codex=no_codex)
+    codex_findings: list = []
+    codex_parse_warnings: list = []
+    codex_unparsed: list = []
+    if codex_status.get("status") == "ok":
+        try:
+            codex_text = Path(paths["codex_stdout"]).read_text()
+        except FileNotFoundError:
+            codex_text = ""
+        parsed = _normalize_findings_subproc(codex_text, source="codex")
+        codex_findings = parsed.get("findings", [])
+        codex_parse_warnings = parsed.get("parse_warnings", [])
+        codex_unparsed = parsed.get("unparsed_chunks", [])
+    # Claude side
+    transcripts_dir = Path(paths["claude_transcripts_dir"])
+    claude_normalized: dict = {}
+    claude_summary: list = []
+    all_unparsed: list = list(codex_unparsed)
+    if transcripts_dir.exists():
+        for transcript in sorted(transcripts_dir.glob("*.txt")):
+            # Skip the all.txt audit concatenation — would double-count findings
+            # that already appear in per-agent files.
+            if transcript.name == "all.txt":
+                continue
+            agent = transcript.stem
+            parsed = _normalize_findings_subproc(
+                transcript.read_text(), source=f"claude:{agent}"
+            )
+            claude_normalized[agent] = parsed
+            claude_summary.append({
+                "agent": agent,
+                "status": "ok",
+                "raw_findings": len(parsed.get("findings", [])),
+                "parse_warnings": len(parsed.get("parse_warnings", [])),
+            })
+            all_unparsed.extend(parsed.get("unparsed_chunks", []))
+    # Allocate empty clusters file
+    clusters_file = _mktemp_file("combined-review-clusters-", ".json")
+    Path(clusters_file).write_text("")  # ensure 0-byte sentinel
+    state["paths"]["clusters_file"] = clusters_file
+    _write_state_atomic(state, state_path)
+    # Reviewer summary for the cluster JSON Claude will Write
+    reviewer_summary: dict = {
+        "codex": {
+            "status": codex_status.get("status", "failed"),
+            "raw_findings": len(codex_findings),
+            "parse_warnings": len(codex_parse_warnings),
+        },
+        "claude": claude_summary,
+    }
+    if codex_status.get("status") != "ok" and codex_status.get("error"):
+        reviewer_summary["codex"]["error"] = codex_status["error"]
+    if codex_status.get("duration_ms"):
+        reviewer_summary["codex"]["duration_ms"] = codex_status["duration_ms"]
+    print(json.dumps({
+        "clusters_file": clusters_file,
+        "normalized_findings": {
+            "codex": codex_findings,
+            "claude": claude_normalized,
+        },
+        "reviewer_summary": reviewer_summary,
+        "unparsed_chunks": all_unparsed,
+    }))
 
 
 def cmd_run_codex(state_path: str) -> None:
