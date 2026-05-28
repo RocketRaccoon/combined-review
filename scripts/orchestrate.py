@@ -338,10 +338,64 @@ def main() -> None:
             sys.exit(2)
         cmd_phase_a(args_string)
         return
+    if ns.phase == "run-codex":
+        cmd_run_codex(ns.state)
+        return
     raise SystemExit(
         f"orchestrate.py: subcommand {ns.phase!r} is not yet implemented "
-        "(scaffold only; see plan Tasks 4-6)"
+        "(see plan Tasks 5-6)"
     )
+
+
+def _load_state(state_path: str) -> dict:
+    if not os.path.exists(state_path):
+        sys.stderr.write(f"error: state file not found: {state_path}\n")
+        sys.exit(1)
+    with open(state_path) as f:
+        return json.load(f)
+
+
+def cmd_run_codex(state_path: str) -> None:
+    """T4 — thin wrapper around run-codex.py.
+
+    run-codex.py needs a scope JSON file (it reads worktree_path / repo_root
+    to choose cwd). Write a temporary scope file derived from state.scope,
+    invoke run-codex.py with state's stdout/stderr/status paths, then clean
+    up the temp scope file. run-codex.py always writes a status JSON before
+    exiting; phase-c-pre's read_codex_status_safe also handles empty status
+    if the wrapper or the codex CLI is SIGKILLed before that write."""
+    state = _load_state(state_path)
+    if state["config"].get("no_codex"):
+        sys.stderr.write(
+            "error: run-codex invoked but state.config.no_codex is true. "
+            "Skip this Bash call in SKILL.md when --no-codex is passed.\n"
+        )
+        sys.exit(1)
+    scope_fd, scope_path = tempfile.mkstemp(
+        prefix="combined-review-runcodex-scope-", suffix=".json"
+    )
+    try:
+        with os.fdopen(scope_fd, "w") as f:
+            json.dump(state["scope"], f)
+        cmd = [
+            "python3", str(SCRIPTS_DIR / "run-codex.py"),
+            "--scope", scope_path,
+            "--prompt-file", state["paths"]["prompt"],
+            "--stdout", state["paths"]["codex_stdout"],
+            "--stderr", state["paths"]["codex_stderr"],
+            "--status", state["paths"]["codex_status"],
+        ]
+        # run-codex.py manages its own timeout + writes status; we just wait.
+        r = subprocess.run(cmd)
+        # run-codex.py always exits 0 except for hard pre-flight failures;
+        # propagate its code so caller sees real errors (status file is
+        # still authoritative for the codex run's outcome).
+        sys.exit(r.returncode)
+    finally:
+        try:
+            os.unlink(scope_path)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":
