@@ -18,4 +18,6 @@ You are now in the `combined-review` skill. Read and follow `~/.claude/skills/co
 
 **Do not invent your own pipeline.** Follow SKILL.md step for step.
 
-The argument string above is passed to `orchestrate.py phase-a` via stdin (the orchestrator uses `shlex.split` internally and round-trips shell-quoted values like `--focus "API surface"` correctly). Do NOT pre-process `$ARGUMENTS` or write it to a temp file first — that was the old flow; the new orchestrator handles quoting itself.
+The argument string above is passed to `orchestrate.py phase-a` via a **single-quoted heredoc** (SKILL.md Step 1 shows the exact form). Do NOT use `echo "$ARGUMENTS" | …` — that would force Claude to inline the user's literal input into a Bash command, and any `$(...)` or backticks in the input would execute. Single-quoted heredoc (`<<'MARKER'`) treats the body as literal stdin; orchestrate.py's internal `shlex.split` then handles quoted values like `--focus "API surface"` correctly.
+
+Do NOT pre-process `$ARGUMENTS` or write it to a temp file first — that was the old flow.

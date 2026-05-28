@@ -263,6 +263,10 @@ def cmd_phase_a(args_string: str) -> None:
         "claude_transcripts_dir": transcripts_dir,
         "scope_summary": summary,
         "mode": cfg["mode"],
+        # focus is forwarded so Claude can include it verbatim in the cluster
+        # JSON's top-level "focus" field. Without this, SKILL.md's template
+        # defaulted to null and focus disappeared from the final report.
+        "focus": cfg.get("focus"),
         "total_lines_changed": total,
         "large_diff": total > LARGE_DIFF_THRESHOLD,
         "no_codex": cfg.get("no_codex", False),
@@ -328,14 +332,11 @@ def main() -> None:
     ap = _build_parser()
     ns = ap.parse_args()
     if ns.phase == "phase-a":
+        # Empty stdin is valid — corresponds to `/combined-review` with no
+        # args, which should auto-detect the scope. shlex.split('') → [].
+        # parse-args.py with empty argv → cfg.scope_flag = None → resolve-scope
+        # auto-detects from git state. PR #178 follow-up review fix.
         args_string = sys.stdin.read().strip()
-        if not args_string:
-            sys.stderr.write(
-                "error: phase-a reads the argument string from stdin "
-                '(e.g. `echo "$ARGUMENTS" | orchestrate.py phase-a`). '
-                "Got empty stdin.\n"
-            )
-            sys.exit(2)
         cmd_phase_a(args_string)
         return
     if ns.phase == "run-codex":

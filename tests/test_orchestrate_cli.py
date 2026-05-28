@@ -18,14 +18,21 @@ def test_no_subcommand_errors():
             or "expected" in r.stderr.lower())
 
 
-def test_phase_a_requires_stdin():
+def test_phase_a_accepts_stdin_input():
     """phase-a reads the arg string from stdin (NOT --args flag and NOT
     positional). Tried both during PR #178 iterations; argparse rejects
     flag-shaped values in both forms. stdin is immune to that quirk.
-    SKILL.md: `echo "$ARGUMENTS" | orchestrate.py phase-a`."""
-    r = run_script("orchestrate.py", "phase-a", input="")
-    assert r.returncode != 0
-    assert "stdin" in r.stderr.lower()
+    SKILL.md: `orchestrate.py phase-a <<'CR_ARGS_EOF'\\n$ARGUMENTS\\nCR_ARGS_EOF`.
+
+    We only assert that phase-a *accepts* stdin input — the actual
+    end-to-end behavior on empty / well-formed inputs lives in
+    test_orchestrate_phase_a.py where the test controls git state."""
+    # If phase-a had a required --args flag, this would error with
+    # "the following arguments are required: --args". With stdin-driven
+    # input, parsing argv succeeds and any error comes from later stages.
+    r = run_script("orchestrate.py", "phase-a", input="--help")
+    assert "the following arguments are required" not in r.stderr.lower()
+    assert "required: --args" not in r.stderr
 
 
 def test_run_codex_requires_state_flag():

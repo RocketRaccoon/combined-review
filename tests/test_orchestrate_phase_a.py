@@ -93,12 +93,35 @@ def test_phase_a_flags_large_diff(tmp_repo):
 
 
 def test_phase_a_emits_summary_fields(tmp_repo):
-    """The stdout JSON must include all the fields SKILL.md expects to consume."""
+    """The stdout JSON must include all the fields SKILL.md expects to consume.
+    PR #178 follow-up review: `focus` MUST be in the handoff so SKILL.md's
+    cluster JSON template forwards it to the final report (previously it was
+    hardcoded to null and focused reviews showed `Focus: (none)`)."""
     (tmp_repo / "README.md").write_text("# changed\n")
     r = _phase_a("--uncommitted --mode plan --focus test", tmp_repo)
     out = json.loads(r.stdout)
     for required in ("prompt_path", "state_file", "claude_transcripts_dir",
-                     "scope_summary", "mode", "total_lines_changed",
+                     "scope_summary", "mode", "focus", "total_lines_changed",
                      "large_diff", "no_codex", "full"):
         assert required in out, f"phase-a stdout missing {required}: {out}"
     assert out["mode"] == "plan"
+    assert out["focus"] == "test"
+
+
+def test_phase_a_focus_null_when_unspecified(tmp_repo):
+    (tmp_repo / "README.md").write_text("# changed\n")
+    r = _phase_a("--uncommitted --mode code", tmp_repo)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["focus"] is None
+
+
+def test_phase_a_empty_stdin_falls_through_to_autodetect(tmp_repo):
+    """PR #178 follow-up review: bare /combined-review (empty $ARGUMENTS →
+    empty stdin) MUST auto-detect from git state, not exit 2. With a dirty
+    tree, auto-detect picks --uncommitted and proceeds normally."""
+    (tmp_repo / "README.md").write_text("# changed\n")
+    r = _phase_a("", tmp_repo)  # empty arg string → empty stdin
+    assert r.returncode == 0, r.stderr
+    state = json.loads(Path(json.loads(r.stdout)["state_file"]).read_text())
+    assert state["scope"]["kind"] == "uncommitted"

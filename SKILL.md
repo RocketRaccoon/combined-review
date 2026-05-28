@@ -13,11 +13,17 @@ Let `SKILL_DIR=$HOME/.claude/skills/combined-review`. The orchestrator is `$SKIL
 
 ### Step 1 — Setup (Bash, one call)
 
+Pass `$ARGUMENTS` via a single-quoted heredoc — **never** via `echo "$ARGUMENTS"`. The single-quoted marker prevents Bash from expanding `$(...)`, backticks, or `$VAR` inside the user's input, so an arg like `--focus "$(touch /tmp/pwned)"` arrives as literal text on stdin instead of running a command. `echo`-style passing is unsafe because Claude must inline the slash command's `$ARGUMENTS` value into the Bash text, and `$(...)` inside that value would execute.
+
 ```
-echo "$ARGUMENTS" | $SKILL_DIR/scripts/orchestrate.py phase-a
+$SKILL_DIR/scripts/orchestrate.py phase-a <<'CR_ARGS_EOF'
+$ARGUMENTS
+CR_ARGS_EOF
 ```
 
-Parse the stdout JSON into variables: `STATE_FILE`, `PROMPT_PATH`, `TRANSCRIPTS_DIR`, `SCOPE_SUMMARY`, `MODE`, `LARGE_DIFF` (bool), `TOTAL_LINES_CHANGED`, `NO_CODEX`, `FULL`.
+Empty `$ARGUMENTS` is allowed — orchestrate.py treats it as "no flags" and falls through to auto-detect (dirty tree → uncommitted; clean branch with open PR → that PR; else base...HEAD).
+
+Parse the stdout JSON into variables: `STATE_FILE`, `PROMPT_PATH`, `TRANSCRIPTS_DIR`, `SCOPE_SUMMARY`, `MODE`, `FOCUS` (null or the user's focus string), `LARGE_DIFF` (bool), `TOTAL_LINES_CHANGED`, `NO_CODEX`, `FULL`.
 
 Exit codes:
 - **0** — success, proceed to Step 2.
@@ -82,9 +88,9 @@ Cluster JSON shape (required fields per `validate-clusters.py`):
 
 ```json
 {
-  "scope_summary": "<from phase-a stdout>",
-  "mode": "<from phase-a stdout>",
-  "focus": null,
+  "scope_summary": "<from phase-a stdout — SCOPE_SUMMARY>",
+  "mode": "<from phase-a stdout — MODE>",
+  "focus": "<from phase-a stdout — FOCUS; null when the user didn't pass --focus>",
   "reviewer_summary": { /* forward from phase-c-pre */ },
   "clusters": [
     {
