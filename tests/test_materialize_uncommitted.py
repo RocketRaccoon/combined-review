@@ -72,6 +72,30 @@ def test_uncommitted_deleted_file(tmp_repo):
     assert files["README.md"]["pre_content"] is not None
 
 
+def test_uncommitted_handles_symlink(tmp_repo):
+    """Regression guard for the PR #152 review finding: symlink_target() calls
+    os.readlink(), and earlier drafts of the plan added `import os` only in a
+    later task. On-disk code already has the import — this test makes sure a
+    future commit can't quietly drop it without failing CI.
+
+    A symlink in the working tree must appear in changed_files with kind=symlink
+    and its symlink_target populated."""
+    # Create the link target first (a normal text file) so the symlink isn't dangling.
+    (tmp_repo / "target.md").write_text("link target\n")
+    subprocess.run(["git", "add", "target.md"], cwd=tmp_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add target"], cwd=tmp_repo, check=True)
+    # Now add an untracked symlink to it in the working tree.
+    (tmp_repo / "link.md").symlink_to("target.md")
+    r = materialize(base_scope(tmp_repo))
+    assert r.returncode == 0, r.stderr
+    files = {f["path"]: f for f in json.loads(r.stdout)["changed_files"]}
+    assert "link.md" in files, f"symlink missing from changed_files: {list(files)}"
+    entry = files["link.md"]
+    assert entry["kind"] == "symlink"
+    assert entry["symlink_target"] == "target.md"
+    assert entry["status"] == "added"  # untracked
+
+
 def test_uncommitted_deleted_binary_file(tmp_repo):
     """Regression: deleting a tracked binary file used to crash materialization
     because the deleted-path branch forced kind='text' and then called git show
