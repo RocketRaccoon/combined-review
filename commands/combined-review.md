@@ -1,31 +1,23 @@
 ---
 description: "Run Claude pr-review-toolkit + Codex in parallel; merge findings into one report."
 argument-hint: "[--pr N | --uncommitted | --base BRANCH | --commit SHA | <files...>] [--mode code|spec|plan|docs] [--focus TEXT] [--full] [--no-codex] [--save PATH] [--force-large] [--keep-worktree]"
-allowed-tools: ["Bash", "Read", "Write", "Glob", "Grep", "Task", "Monitor"]
+allowed-tools: ["Bash", "Read", "Write", "Task", "Monitor"]
 ---
 
 # Combined Review
 
-> **Allowlist note** — Edit is intentionally omitted from `allowed-tools` above. This is a read-only review flow. Write is needed for orchestrator-owned temp files (prompt/scope/args) and the optional `--save` report path. Bash is unavoidable (the pipeline is Bash-driven). Removing Edit is defense-in-depth, NOT a hard sandbox — Write+Bash could still modify repo files if the model drifts. Primary protection is the no-edit instruction in the rendered review prompt + `codex exec --sandbox read-only`.
+> **Allowlist note** — Edit/Glob/Grep are intentionally omitted from `allowed-tools`. This skill is a read-only review flow. Bash drives the orchestrator; Read consumes the rendered prompt; Write is needed only for the one cluster-synthesis JSON file and (optionally) the per-agent Task transcripts; Task dispatches sub-agents; Monitor tracks the background codex Bash. The rendered review prompt's no-edit instructions and `codex exec --sandbox read-only` are the primary protections against state changes — the allowlist is defense in depth.
 
-User invoked `/combined-review` with the literal argument string below (do NOT
-substitute it into a shell command — pass it through the args-file path
-described in SKILL.md Phase A2):
+User invoked `/combined-review` with the literal argument string below.
 
 ```
 $ARGUMENTS
 ```
 
-You are now in the `combined-review` skill. Read and follow
-`~/.claude/skills/combined-review/SKILL.md` for the full orchestration pipeline.
+You are now in the `combined-review` skill. Read and follow `~/.claude/skills/combined-review/SKILL.md`. It describes a 6-step sequence; the orchestrator at `$SKILL_DIR/scripts/orchestrate.py` owns everything except interactive confirmation, parallel `Task` dispatch, and the cluster-synthesis Write.
 
-**Critical reminders for this run:**
+**Do not invent your own pipeline.** Follow SKILL.md step for step.
 
-- Phase A is **sequential** — each step depends on the previous. Do NOT batch.
-- `$ARGUMENTS` is captured as literal text — write it to a temp file using the `Write` tool, then pass that file's path to `parse-args.py --args-file`. Never shell-substitute `$ARGUMENTS` into a Bash command line.
-- Phase B is the **only** phase where parallel tool calls happen (codex background + Agent sub-agents in the same message).
-- Phase D cleanup **always** runs, even on errors.
-- Codex side uses `codex exec --sandbox read-only` exclusively — never `codex review`.
-- Worktree cleanup is gated by `cleanup-worktree.sh`'s triple-assertion check — do not invoke `git worktree remove` directly.
+The argument string above is passed to `orchestrate.py phase-a` via a **single-quoted heredoc** (SKILL.md Step 1 shows the exact form). Do NOT use `echo "$ARGUMENTS" | …` — that would force Claude to inline the user's literal input into a Bash command, and any `$(...)` or backticks in the input would execute. Single-quoted heredoc (`<<'MARKER'`) treats the body as literal stdin; orchestrate.py's internal `shlex.split` then handles quoted values like `--focus "API surface"` correctly.
 
-Start with Phase A1 (gc-worktrees).
+Do NOT pre-process `$ARGUMENTS` or write it to a temp file first — that was the old flow.
