@@ -208,13 +208,62 @@ def default_branch(cwd: str) -> str | None:
 
 
 def pr_for_current_branch(cwd: str) -> int | None:
+    """Return the PR number for the current branch, or None if there is no PR.
+
+    Distinguishes 'no PR' (gh exits non-zero with 'no pull requests found'
+    on stderr) from 'gh failed' (auth expired, network down, gh missing).
+    The latter must NOT silently degrade to 'no PR' — that would let
+    auto-detect fall through to a wrong scope (uncommitted instead of
+    pr-against-base, or default-branch instead of pr-of-fork). Surface
+    gh failures as SystemExit so auto-detect halts and the user is
+    told to fix their auth/install.
+
+    PR #3 follow-up review: this function returning None on every non-zero
+    let dirty+PR run as uncommitted on expired auth.
+    """
     r = subprocess.run(
         ["gh", "pr", "view", "--json", "number"],
         cwd=cwd, capture_output=True, text=True,
     )
-    if r.returncode != 0:
-        return None
-    return json.loads(r.stdout)["number"]
+    if r.returncode == 0:
+        try:
+            return json.loads(r.stdout)["number"]
+        except (json.JSONDecodeError, KeyError) as e:
+            raise SystemExit(
+                f"error: gh pr view returned malformed JSON ({e}); refusing "
+                "to guess scope. Run `gh pr view --json number` to debug."
+            )
+    # Non-zero. Default to "no PR" (preserves prior behavior for local-only
+    # repos with no GitHub remote — `tmp_repo` fixture, tmp clones, etc.) but
+    # HALT on signals that clearly indicate gh itself failed (auth, network,
+    # rate limit). The asymmetry is deliberate: silently treating a "no PR"
+    # signal as a real auth failure would block every local-only repo from
+    # ever auto-detecting; silently treating an auth failure as "no PR"
+    # would have auto-detect silently degrade to the wrong scope (the
+    # exact bug PR #3 follow-up review surfaced).
+    stderr_low = (r.stderr or "").lower()
+    halt_markers = (
+        "authentication",      # "authentication required", "not authenticated"
+        "auth required",
+        "gh auth login",       # gh's own remediation hint
+        " 401",
+        " 403",
+        "rate limit",
+        "network",
+        "timed out",
+        "connection refused",
+        "command not found",   # gh missing from PATH after preflight
+    )
+    if any(m in stderr_low for m in halt_markers):
+        raise SystemExit(
+            f"error: `gh pr view` failed (exit {r.returncode}) with what looks "
+            "like an auth or network problem — refusing to guess PR status. "
+            "Fix the underlying issue (e.g. `gh auth login`) and retry, OR "
+            "pass an explicit scope flag (--pr N / --uncommitted / --base "
+            "BRANCH / --commit SHA).\n"
+            f"  gh stderr: {(r.stderr or '').strip()[:300]}"
+        )
+    return None
 
 
 def resolve_pr(cfg: dict, root: str) -> dict:
