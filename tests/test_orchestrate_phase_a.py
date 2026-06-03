@@ -13,7 +13,15 @@ from pathlib import Path
 from tests.conftest import run_script
 
 
-def _phase_a(args_string: str, cwd):
+def _phase_a(args_string: str, cwd, *, force_codex_preflight: bool = False):
+    """Run orchestrate.py phase-a with args_string on stdin.
+
+    Defaults to appending `--no-codex` so the test suite runs in
+    environments that don't have the codex CLI installed (e.g. CI). Tests
+    that specifically validate codex preflight behavior set
+    force_codex_preflight=True and pass their own stub via fake_bin."""
+    if not force_codex_preflight and "--no-codex" not in args_string:
+        args_string = (args_string + " --no-codex").strip()
     return subprocess.run(
         ["python3", str(Path(__file__).parent.parent / "scripts" / "orchestrate.py"),
          "phase-a"],
@@ -119,9 +127,32 @@ def test_phase_a_focus_null_when_unspecified(tmp_repo):
 def test_phase_a_empty_stdin_falls_through_to_autodetect(tmp_repo):
     """PR #178 follow-up review: bare /combined-review (empty $ARGUMENTS →
     empty stdin) MUST auto-detect from git state, not exit 2. With a dirty
-    tree, auto-detect picks --uncommitted and proceeds normally."""
+    tree, auto-detect picks --uncommitted and proceeds normally.
+
+    NB: empty arg string means no --no-codex either. _phase_a's default
+    appends --no-codex regardless (test isn't about codex)."""
     (tmp_repo / "README.md").write_text("# changed\n")
-    r = _phase_a("", tmp_repo)  # empty arg string → empty stdin
+    r = _phase_a("", tmp_repo)  # _phase_a injects --no-codex
     assert r.returncode == 0, r.stderr
     state = json.loads(Path(json.loads(r.stdout)["state_file"]).read_text())
     assert state["scope"]["kind"] == "uncommitted"
+
+
+def test_phase_a_codex_preflight_fires_when_codex_missing(tmp_repo, monkeypatch):
+    """Coverage for the codex preflight path: phase-a without --no-codex
+    on a machine without codex must exit 3 with a clear message.
+
+    Skipped on dev machines that have codex installed — the test
+    specifically verifies the missing-codex branch and overriding PATH
+    here would also break git/gh which phase-a needs. CI runners
+    (ubuntu-latest) don't have codex, so this runs there."""
+    import shutil as _sh
+    if _sh.which("codex") is not None:
+        import pytest
+        pytest.skip("codex is on PATH on this machine; test asserts the codex-missing branch")
+    (tmp_repo / "README.md").write_text("# changed\n")
+    r = _phase_a("--uncommitted --mode code", tmp_repo,
+                 force_codex_preflight=True)
+    assert r.returncode == 3, (r.returncode, r.stderr)
+    assert "codex" in r.stderr.lower()
+    assert "--no-codex" in r.stderr
