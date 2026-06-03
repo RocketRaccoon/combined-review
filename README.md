@@ -78,7 +78,7 @@ Six steps per run (seven if cluster JSON needs one validation-repair round):
 6. **Write clusters JSON** — Claude clusters findings semantically and writes the result
 7. **phase-c-post** (Bash) — validate JSON; render report (or one-shot repair retry); cleanup
 
-For the full design rationale, see [the refactor spec](https://github.com/Juvera-AI/juvera_ai/blob/main/docs/superpowers/specs/2026-05-26-combined-review-refactor-design.md) and the [original skill spec](https://github.com/Juvera-AI/juvera_ai/blob/main/docs/superpowers/specs/2026-05-11-combined-review-skill-design.md).
+Design rationale and the refactor history live in private notes for now; the orchestration boundary (Claude owns AskUserQuestion + Task dispatch + the cluster-synthesis Write; everything else is `orchestrate.py`) is the load-bearing piece.
 
 ## Develop
 
