@@ -10,7 +10,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from tests.conftest import run_script
+from tests.conftest import run_script, SCRIPTS_DIR
 
 
 def _phase_a(args_string: str, cwd, *, force_codex_preflight: bool = False):
@@ -23,8 +23,7 @@ def _phase_a(args_string: str, cwd, *, force_codex_preflight: bool = False):
     if not force_codex_preflight and "--no-codex" not in args_string:
         args_string = (args_string + " --no-codex").strip()
     return subprocess.run(
-        ["python3", str(Path(__file__).parent.parent / "scripts" / "orchestrate.py"),
-         "phase-a"],
+        ["python3", str(SCRIPTS_DIR / "orchestrate.py"), "phase-a"],
         input=args_string,
         cwd=cwd, capture_output=True, text=True,
     )

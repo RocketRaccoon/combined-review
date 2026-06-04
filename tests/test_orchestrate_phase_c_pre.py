@@ -8,7 +8,9 @@ import json
 import subprocess
 from pathlib import Path
 
-ORCH = Path(__file__).parent.parent / "scripts" / "orchestrate.py"
+from tests.conftest import SCRIPTS_DIR
+
+ORCH = SCRIPTS_DIR / "orchestrate.py"
 
 CLAUDE_TRANSCRIPT = """\
 ---FINDING---

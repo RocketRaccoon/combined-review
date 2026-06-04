@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
+SCRIPTS_DIR = Path(__file__).parent.parent / "plugins" / "combined-review" / "scripts"
 
 
 @pytest.fixture
