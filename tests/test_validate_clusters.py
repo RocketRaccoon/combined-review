@@ -109,3 +109,52 @@ def test_unparsed_chunks_rejects_missing_source():
     bad["unparsed_chunks"] = [{"text": "no source field"}]
     r = run_script("validate-clusters.py", input=json.dumps(bad))
     assert r.returncode != 0
+
+
+def test_top_level_must_be_object():
+    r = run_script("validate-clusters.py", input=json.dumps([]))
+    assert r.returncode != 0
+    assert "root" in r.stderr.lower()
+
+
+def test_empty_sources_violates_min_items():
+    bad = json.loads(json.dumps(VALID_CLUSTERS))
+    bad["clusters"][0]["sources"] = []
+    r = run_script("validate-clusters.py", input=json.dumps(bad))
+    assert r.returncode != 0
+    assert "sources" in r.stderr.lower()
+
+
+def test_nested_source_item_must_be_object():
+    bad = json.loads(json.dumps(VALID_CLUSTERS))
+    bad["clusters"][0]["sources"] = ["not-an-object"]
+    r = run_script("validate-clusters.py", input=json.dumps(bad))
+    assert r.returncode != 0
+
+
+def test_focus_accepts_string_and_null_but_not_number():
+    ok_str = json.loads(json.dumps(VALID_CLUSTERS))
+    ok_str["focus"] = "auth surface"
+    assert run_script("validate-clusters.py", input=json.dumps(ok_str)).returncode == 0
+
+    bad = json.loads(json.dumps(VALID_CLUSTERS))
+    bad["focus"] = 123
+    r = run_script("validate-clusters.py", input=json.dumps(bad))
+    assert r.returncode != 0
+    assert "focus" in r.stderr.lower()
+
+
+def test_integer_field_rejects_bool():
+    # bool is an int subclass in Python; JSON-Schema "integer" must exclude it.
+    bad = json.loads(json.dumps(VALID_CLUSTERS))
+    bad["reviewer_summary"]["codex"]["raw_findings"] = True
+    r = run_script("validate-clusters.py", input=json.dumps(bad))
+    assert r.returncode != 0
+
+
+def test_deep_violation_path_is_rendered():
+    bad = json.loads(json.dumps(VALID_CLUSTERS))
+    bad["clusters"][0]["sources"][0]["severity"] = "blocker"
+    r = run_script("validate-clusters.py", input=json.dumps(bad))
+    assert r.returncode != 0
+    assert "clusters/0/sources/0/severity" in r.stderr

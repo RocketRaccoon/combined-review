@@ -5,11 +5,14 @@ Exits 0 if valid; non-zero with a descriptive stderr if not. The orchestrator
 catches non-zero, re-prompts the synthesis LLM once with the error, then
 re-validates. If validation fails twice, the final report runs in "synthesis
 failed" mode (see SKILL.md).
+
+Validation is a small pure-stdlib walk over the constrained JSON-Schema subset
+this file uses (type / required / enum / minItems / properties / items). It has
+no third-party dependency on purpose: a marketplace-installed plugin runs from
+a copied cache where no `pip install` ever runs.
 """
 import json
 import sys
-
-import jsonschema
 
 SCHEMA = {
     "type": "object",
@@ -104,6 +107,55 @@ SCHEMA = {
 }
 
 
+class _SchemaError(Exception):
+    def __init__(self, path, message):
+        self.path = path
+        self.message = message
+
+
+_TYPE_CHECKS = {
+    "object": lambda v: isinstance(v, dict),
+    "array": lambda v: isinstance(v, list),
+    "string": lambda v: isinstance(v, str),
+    # bool is an int subclass in Python; JSON-Schema "integer" excludes bools.
+    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    "null": lambda v: v is None,
+}
+
+
+def _fmt(path):
+    return "/".join(str(p) for p in path) or "(root)"
+
+
+def _check_type(value, type_spec, path):
+    types = type_spec if isinstance(type_spec, list) else [type_spec]
+    if not any(_TYPE_CHECKS[t](value) for t in types):
+        raise _SchemaError(path, f"{value!r} is not of type {type_spec!r}")
+
+
+def _validate(value, schema, path):
+    if "type" in schema:
+        _check_type(value, schema["type"], path)
+    if "enum" in schema and value not in schema["enum"]:
+        raise _SchemaError(path, f"{value!r} is not one of {schema['enum']!r}")
+    if isinstance(value, dict):
+        for req in schema.get("required", []):
+            if req not in value:
+                raise _SchemaError(path + [req], f"{req!r} is a required property")
+        for key, subschema in schema.get("properties", {}).items():
+            if key in value:
+                _validate(value[key], subschema, path + [key])
+    if isinstance(value, list):
+        min_items = schema.get("minItems")
+        if min_items is not None and len(value) < min_items:
+            raise _SchemaError(
+                path, f"array is too short: {len(value)} < minItems {min_items}")
+        item_schema = schema.get("items")
+        if item_schema is not None:
+            for i, item in enumerate(value):
+                _validate(item, item_schema, path + [i])
+
+
 def main() -> None:
     try:
         data = json.load(sys.stdin)
@@ -111,10 +163,10 @@ def main() -> None:
         print(f"error: input is not valid JSON: {e}", file=sys.stderr)
         sys.exit(2)
     try:
-        jsonschema.validate(data, SCHEMA)
-    except jsonschema.ValidationError as e:
-        path = "/".join(str(p) for p in e.absolute_path) or "(root)"
-        print(f"error: schema violation at {path}: {e.message}", file=sys.stderr)
+        _validate(data, SCHEMA, [])
+    except _SchemaError as e:
+        print(f"error: schema violation at {_fmt(e.path)}: {e.message}",
+              file=sys.stderr)
         sys.exit(1)
 
 
