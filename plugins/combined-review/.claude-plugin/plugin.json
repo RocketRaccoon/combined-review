@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "combined-review",
+  "version": "0.1.0",
+  "description": "Run Claude pr-review-toolkit sub-agents and Codex in parallel against the same subject; synthesize one deduped, attributed report.",
+  "author": { "name": "RocketRaccoon", "url": "https://github.com/RocketRaccoon" },
+  "homepage": "https://github.com/RocketRaccoon/combined-review",
+  "repository": "https://github.com/RocketRaccoon/combined-review",
+  "license": "MIT",
+  "keywords": ["code-review", "pr-review", "codex", "multi-llm", "review"]
+}
