@@ -3,7 +3,7 @@
 A Claude Code skill that runs Claude's `pr-review-toolkit` sub-agents and `codex exec --sandbox read-only` in parallel against the same materialized review subject, then synthesizes the findings into one deduped, attributed report.
 
 ```
-/combined-review --pr 123 --mode plan
+/combined-review:review --pr 123 --mode plan
 ```
 
 ## Why this exists
@@ -30,38 +30,31 @@ If you want multi-backend, config-driven, or debate-mode reviews, council and St
 ## Install
 
 ```bash
-git clone https://github.com/RocketRaccoon/combined-review.git
-cd combined-review
-./scripts/install.sh
+/plugin marketplace add RocketRaccoon/combined-review
+/plugin install combined-review@rocketraccoon
 ```
 
-The install script refuses to silently overwrite an existing skill at the same path — if you have an older install, remove it first:
-
-```bash
-rm ~/.claude/skills/combined-review ~/.claude/commands/combined-review.md
-./scripts/install.sh
-```
-
-Then restart Claude Code so it picks up the new slash command.
+Then invoke with `/combined-review:review` (or let Claude auto-invoke it). The
+plugin is copied into Claude Code's plugin cache — there is no `pip install` and
+no symlink step.
 
 ## Dependencies
 
-- Python 3.11+
-- `jsonschema` (installed via `pip install -e ".[dev]"` from this repo)
+- Python 3.11+ (standard library only — the plugin has no third-party runtime deps)
 - `codex` CLI on PATH, logged in: `codex login status`
 - `gh` CLI on PATH, authenticated: `gh auth status` — only needed for `--pr` scope
 
 ## Usage
 
 ```bash
-/combined-review                              # auto-detect scope, code mode
-/combined-review --pr 152                     # review PR #152
-/combined-review --uncommitted --mode spec    # review uncommitted spec changes
-/combined-review --commit abc1234             # review a single commit
-/combined-review docs/design.md --mode docs   # review one file as a doc
-/combined-review --pr 152 --focus "auth surface"  # quoted focus round-trips
-/combined-review --no-codex                   # Claude-only (skip codex)
-/combined-review --full                       # 6 Claude agents instead of 3
+/combined-review:review                            # auto-detect scope, code mode
+/combined-review:review --pr 152                   # review PR #152
+/combined-review:review --uncommitted --mode spec  # review uncommitted spec changes
+/combined-review:review --commit abc1234           # review a single commit
+/combined-review:review docs/design.md --mode docs # review one file as a doc
+/combined-review:review --pr 152 --focus "auth surface"  # quoted focus round-trips
+/combined-review:review --no-codex                 # Claude-only (skip codex)
+/combined-review:review --full                     # 6 Claude agents instead of 3
 ```
 
 Auto-detect picks `--uncommitted` when the tree is dirty, `--pr N` when the current branch has an open PR, or `--base <default>` otherwise. Ambiguous cases (dirty tree + open PR) error and ask you to pass an explicit scope.
@@ -84,10 +77,10 @@ Design rationale and the refactor history live in private notes for now; the orc
 
 ```bash
 pip install -e ".[dev]"
-pytest -v          # 116 tests as of this writing
+pytest -q          # run for the current test count
 ```
 
-`scripts/orchestrate.py` is the orchestrator. Each phase boundary has its own test file under `tests/`. The per-step scripts (`parse-args.py`, `resolve-scope.py`, `materialize-scope.py`, `render-prompt.py`, `run-codex.py`, `normalize-findings.py`, `validate-clusters.py`, `report.py`) are kept as importable single-purpose units with their own CLI surfaces and tests; `orchestrate.py` invokes them via subprocess.
+`plugins/combined-review/scripts/orchestrate.py` is the orchestrator. Each phase boundary has its own test file under `tests/`. The per-step scripts (`parse-args.py`, `resolve-scope.py`, `materialize-scope.py`, `render-prompt.py`, `run-codex.py`, `normalize-findings.py`, `validate-clusters.py`, `report.py`) live alongside it under `plugins/combined-review/scripts/` as single-purpose units with their own CLI surfaces and tests; `orchestrate.py` invokes them via subprocess.
 
 ## License
 

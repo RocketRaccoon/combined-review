@@ -8,9 +8,9 @@ labels: bug
 <!-- A short, factual description. What did you do? What did you see? -->
 
 **Repro**
-<!-- Exact command. If it was a /combined-review invocation, include the args. -->
+<!-- Exact command. If it was a /combined-review:review invocation, include the args. -->
 ```
-/combined-review --pr 123 --mode plan
+/combined-review:review --pr 123 --mode plan
 ```
 
 **Expected behavior**
@@ -22,7 +22,7 @@ labels: bug
 - Python: <!-- python3 --version -->
 - codex CLI version: <!-- codex --version, or "not installed / --no-codex" -->
 - gh version: <!-- gh --version -->
-- combined-review commit: <!-- git rev-parse HEAD inside ~/.claude/skills/combined-review -->
+- combined-review version: <!-- plugin.json "version", or `claude plugin list` -->
 
 **Logs / output**
 <details>
