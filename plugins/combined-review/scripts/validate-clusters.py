@@ -129,6 +129,14 @@ def _fmt(path):
 
 def _check_type(value, type_spec, path):
     types = type_spec if isinstance(type_spec, list) else [type_spec]
+    for t in types:
+        if t not in _TYPE_CHECKS:
+            # A SCHEMA-definition bug, not a data violation: fail loudly with a
+            # clear message instead of a bare KeyError, and don't silently treat
+            # the unknown type as never-matching (which would mis-reject data).
+            raise ValueError(
+                f"validate-clusters.py: SCHEMA uses unsupported type {t!r}; "
+                f"add it to _TYPE_CHECKS")
     if not any(_TYPE_CHECKS[t](value) for t in types):
         raise _SchemaError(path, f"{value!r} is not of type {type_spec!r}")
 

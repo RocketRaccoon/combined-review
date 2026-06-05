@@ -18,6 +18,8 @@ Tests should pass without `codex` or an authenticated `gh` — the suite uses `-
 
 Develop against your working copy with `claude --plugin-dir ./plugins/combined-review`, or add the repo as a local marketplace: `/plugin marketplace add ./` then `/plugin install combined-review@rocketraccoon`. Restart Claude Code (or run `/reload-plugins`) after editing the skill so the harness re-reads its frontmatter.
 
+> **Pre-merge testing footgun.** The README's `/plugin marketplace add RocketRaccoon/combined-review` (the GitHub form) fetches the repo's **default branch**, so it only works once `.claude-plugin/marketplace.json` is on `main`. On a feature branch, use the local path (above) instead. Note that a local-path install resolves `${CLAUDE_PLUGIN_ROOT}` to your working copy rather than a `~/.claude/plugins/cache/` copy — so to exercise the real cache-install path (the thing that matters for published behavior), test the GitHub form once after merge.
+
 ## Style
 
 - Python 3.11+ syntax (`int | None`, `dict[str, ...]`).

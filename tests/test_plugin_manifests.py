@@ -44,3 +44,21 @@ def test_skill_has_no_legacy_path_references():
     skill = (PLUGIN_DIR / "skills" / "review" / "SKILL.md").read_text()
     assert "SKILL_DIR" not in skill
     assert ".claude/skills" not in skill
+
+
+def test_skill_frontmatter_has_required_keys():
+    """Shallow gate (no PyYAML): the SKILL.md frontmatter block exists and
+    declares the keys the flow depends on. The authoritative check is the
+    manual `claude plugin validate --strict`; this catches a frontmatter that
+    was dropped or gutted before CI even gets there."""
+    skill = (PLUGIN_DIR / "skills" / "review" / "SKILL.md").read_text()
+    assert skill.startswith("---\n"), "SKILL.md must open with a YAML frontmatter fence"
+    # frontmatter is the block between the first two '---\n' fences
+    parts = skill.split("---\n", 2)
+    assert len(parts) == 3, "SKILL.md frontmatter must be closed with a '---' fence"
+    frontmatter = parts[1]
+    for key in ("name:", "description:", "allowed-tools:", "argument-hint:"):
+        assert key in frontmatter, f"SKILL.md frontmatter missing {key!r}"
+    # the read-only review flow needs exactly these tools allow-listed
+    for tool in ("Bash", "Read", "Write", "Task", "Monitor"):
+        assert tool in frontmatter, f"allowed-tools should list {tool!r}"
