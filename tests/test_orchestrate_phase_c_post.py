@@ -11,7 +11,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-ORCH = Path(__file__).parent.parent / "scripts" / "orchestrate.py"
+from tests.conftest import SCRIPTS_DIR
+
+ORCH = SCRIPTS_DIR / "orchestrate.py"
 
 VALID_CLUSTERS = {
     "scope_summary": "uncommitted (1 file)",

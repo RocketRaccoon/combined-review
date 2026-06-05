@@ -12,7 +12,9 @@ import tempfile
 import textwrap
 from pathlib import Path
 
-ORCH = Path(__file__).parent.parent / "scripts" / "orchestrate.py"
+from tests.conftest import SCRIPTS_DIR
+
+ORCH = SCRIPTS_DIR / "orchestrate.py"
 
 
 def _make_state(tmp_path, repo_root, worktree_path=None):

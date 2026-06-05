@@ -1,13 +1,17 @@
 ---
 name: combined-review
 description: Use when the user wants a single code/spec/plan review that fuses findings from Claude's pr-review-toolkit sub-agents and Codex CLI in one session. Triggers — PR review, branch-vs-main review, spec/plan review, "review with both tools", "/combined-review".
+argument-hint: "[--pr N | --uncommitted | --base BRANCH | --commit SHA | <files...>] [--mode code|spec|plan|docs] [--focus TEXT] [--full] [--no-codex] [--save PATH] [--force-large] [--keep-worktree]"
+allowed-tools: ["Bash", "Read", "Write", "Task", "Monitor"]
 ---
 
 # Combined Review
 
+> **Allowlist note** — Edit/Glob/Grep are intentionally omitted from `allowed-tools`. This skill is a read-only review flow. Bash drives the orchestrator; Read consumes the rendered prompt; Write is needed only for the one cluster-synthesis JSON file and (optionally) the per-agent Task transcripts; Task dispatches sub-agents; Monitor tracks the background codex Bash. The rendered review prompt's no-edit instructions and `codex exec --sandbox read-only` are the primary protections against state changes — the allowlist is defense in depth.
+
 Run Claude pr-review-toolkit sub-agents and Codex (`codex exec --sandbox read-only`) in parallel against the same materialized review subject, then synthesize one deduped, attributed report.
 
-Let `SKILL_DIR=$HOME/.claude/skills/combined-review`. The orchestrator is `$SKILL_DIR/scripts/orchestrate.py` — a single Python process that owns setup, normalization, validation, rendering, and cleanup. **You only do what only you can do**: confirm with the user, dispatch `Task` sub-agents, and write the cluster-synthesis JSON.
+The orchestrator is `${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.py` — a single Python process that owns setup, normalization, validation, rendering, and cleanup. **You only do what only you can do**: confirm with the user, dispatch `Task` sub-agents, and write the cluster-synthesis JSON. Invoke it as `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.py" <phase>` so the call never depends on the cache copy preserving the executable bit, and so a cache path containing spaces still works.
 
 ## Sequence — 6 happy-path tool calls; +1 if validation needs repair
 
@@ -16,7 +20,7 @@ Let `SKILL_DIR=$HOME/.claude/skills/combined-review`. The orchestrator is `$SKIL
 Pass `$ARGUMENTS` via a single-quoted heredoc — **never** via `echo "$ARGUMENTS"`. The single-quoted marker prevents Bash from expanding `$(...)`, backticks, or `$VAR` inside the user's input, so an arg like `--focus "$(touch /tmp/pwned)"` arrives as literal text on stdin instead of running a command. `echo`-style passing is unsafe because Claude must inline the slash command's `$ARGUMENTS` value into the Bash text, and `$(...)` inside that value would execute.
 
 ```
-$SKILL_DIR/scripts/orchestrate.py phase-a <<'CR_ARGS_EOF'
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.py" phase-a <<'CR_ARGS_EOF'
 $ARGUMENTS
 CR_ARGS_EOF
 ```
@@ -39,7 +43,7 @@ If `LARGE_DIFF == true` and the user did not pass `--force-large`, ask:
 On **decline**:
 
 ```
-$SKILL_DIR/scripts/orchestrate.py cleanup --state "$STATE_FILE"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.py" cleanup --state "$STATE_FILE"
 ```
 
 then stop. The `cleanup` subcommand is the dedicated abort entry — `phase-c-post` requires `--clusters-file` and cannot serve this path.
@@ -50,7 +54,7 @@ Issue in ONE message:
 
 - **Background Bash** (skip if `NO_CODEX == true`):
   ```
-  $SKILL_DIR/scripts/orchestrate.py run-codex --state "$STATE_FILE"
+  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.py" run-codex --state "$STATE_FILE"
   ```
   with `run_in_background: true`. Use `Monitor` to know when it completes.
 
@@ -68,7 +72,7 @@ Each returned `Task` text goes to `$TRANSCRIPTS_DIR/<agent-name>.txt`. `$TRANSCR
 ### Step 5 — Normalize + alloc clusters file (Bash, one call)
 
 ```
-$SKILL_DIR/scripts/orchestrate.py phase-c-pre --state "$STATE_FILE"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.py" phase-c-pre --state "$STATE_FILE"
 ```
 
 (No `--claude-transcripts` flag — the dir comes from state.) Parse stdout:
@@ -123,7 +127,7 @@ Cluster JSON shape (required fields per `validate-clusters.py`):
 ### Step 7 — Validate + render + cleanup (Bash, one or two calls)
 
 ```
-$SKILL_DIR/scripts/orchestrate.py phase-c-post \
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.py" phase-c-post \
   --state "$STATE_FILE" --clusters-file "$CLUSTERS_FILE"
 ```
 
@@ -134,7 +138,7 @@ Branches on exit code:
 
 ## Failure handling
 
-- Any non-zero exit from phase-a/run-codex/phase-c-pre/phase-c-post other than the documented codes: surface the error, run `orchestrate.py cleanup --state $STATE_FILE` if a state file exists, stop.
+- Any non-zero exit from phase-a/run-codex/phase-c-pre/phase-c-post other than the documented codes: surface the error, run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/orchestrate.py" cleanup --state "$STATE_FILE"` if a state file exists, stop.
 - **Codex non-zero / timeout / SIGKILL**: `phase-c-pre` handles every case (including empty/missing status files — the PR #152 regression-fixed path); report renders with `"codex failed"` in `reviewer_summary`. Don't second-guess it.
 - **Individual `Task` agent failure**: continue with the others; the failed agent shows up as `parse_warnings` in the final report.
 

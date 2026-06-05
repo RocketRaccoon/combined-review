@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "rocketraccoon",
+  "owner": { "name": "RocketRaccoon", "email": "andreich87@gmail.com" },
+  "plugins": [
+    {
+      "name": "combined-review",
+      "source": "./plugins/combined-review",
+      "description": "Run Claude pr-review-toolkit sub-agents and Codex in parallel; one deduped, attributed report.",
+      "category": "development"
+    }
+  ]
+}
